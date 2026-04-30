@@ -376,36 +376,32 @@ private fun ConnectionTab(
         singleLine = true
     )
 
+    // --- Client certificate section (applies to the remote URL) ---
+    ClientCertSection(
+        enabled = clientCertEnabled,
+        alias = clientCertAlias,
+        onEnabledChange = onClientCertEnabledChange,
+        onAliasChange = onClientCertAliasChange
+    )
+
     val canTestRemote = !testing && url.isNotBlank() && token.isNotBlank()
     val canTestLocal = !testing && localUrlEnabled && localUrl.isNotBlank() && token.isNotBlank()
 
-    if (localUrlEnabled) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                enabled = canTestRemote,
-                onClick = onTestRemote,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(if (testingLabel == "Remote") "Testing..." else "Test remote")
+    Button(
+        enabled = canTestRemote,
+        onClick = onTestRemote
+    ) {
+        Text(
+            when {
+                testingLabel == "Remote" -> "Testing..."
+                localUrlEnabled -> "Test remote"
+                else -> "Test Connection"
             }
-            Button(
-                enabled = canTestLocal,
-                onClick = onTestLocal,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(if (testingLabel == "Local") "Testing..." else "Test local")
-            }
-        }
-    } else {
-        Button(
-            enabled = canTestRemote,
-            onClick = onTestRemote
-        ) {
-            Text(if (testing) "Testing..." else "Test Connection")
-        }
+        )
     }
 
-    StatusRow(status, error, lastTestedLabel)
+    // Show the last test outcome only for the remote URL here.
+    if (lastTestedLabel == "Remote") StatusRow(status, error)
 
     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
@@ -419,15 +415,15 @@ private fun ConnectionTab(
         onHomeSsidsChange = onHomeSsidsChange
     )
 
-    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-    // --- Client certificate section ---
-    ClientCertSection(
-        enabled = clientCertEnabled,
-        alias = clientCertAlias,
-        onEnabledChange = onClientCertEnabledChange,
-        onAliasChange = onClientCertAliasChange
-    )
+    if (localUrlEnabled) {
+        Button(
+            enabled = canTestLocal,
+            onClick = onTestLocal
+        ) {
+            Text(if (testingLabel == "Local") "Testing..." else "Test local")
+        }
+        if (lastTestedLabel == "Local") StatusRow(status, error)
+    }
 }
 
 @Composable
@@ -813,13 +809,12 @@ private fun LogLevelDropdown(
 }
 
 @Composable
-private fun StatusRow(status: Status, error: String? = null, label: String? = null) {
-    val prefix = label?.let { "[$it] " }.orEmpty()
+private fun StatusRow(status: Status, error: String? = null) {
     val text = when (status) {
         Status.Idle -> ""
-        Status.Testing -> "${prefix}Testing connection..."
-        Status.Success -> "$prefix✅ Connected successfully!"
-        Status.Failed -> "$prefix❌ Failed to connect: " +
+        Status.Testing -> "Testing connection..."
+        Status.Success -> "✅ Connected successfully!"
+        Status.Failed -> "❌ Failed to connect: " +
                 (error?.takeIf { it.isNotBlank() } ?: "Unknown error")
     }
     Text(text)
