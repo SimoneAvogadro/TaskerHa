@@ -95,7 +95,7 @@ abstract class BaseTaskerRunner<I : Any, O : Any> : TaskerPluginRunnerAction<I, 
      * Create a HomeAssistantClient from context settings
      */
     private fun createClient(context: Context): HomeAssistantClient {
-        val url = HaSettings.loadUrl(context)
+        val url = HaSettings.resolveUrl(context)
         val token = HaSettings.loadToken(context)
         return HomeAssistantClient(url, token)
     }
