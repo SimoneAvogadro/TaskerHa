@@ -1,10 +1,15 @@
 package com.github.db1996.taskerha.activities.screens
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.security.KeyChain
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.*
@@ -33,6 +39,7 @@ import com.github.db1996.taskerha.logging.LogChannel
 import com.github.db1996.taskerha.logging.LogLevel
 import com.github.db1996.taskerha.logging.CustomLogger
 import com.github.db1996.taskerha.service.HaWebSocketService
+import com.github.db1996.taskerha.util.HaHttpClientFactory
 import com.github.db1996.taskerha.util.NetworkHelper
 import com.github.db1996.taskerha.util.hasNotificationPermission
 import kotlinx.coroutines.Dispatchers
@@ -67,18 +74,28 @@ fun MainSettingsScreen(
     var localUrl by remember { mutableStateOf(HaSettings.loadLocalUrl(context)) }
     var homeSsids by remember { mutableStateOf(HaSettings.loadHomeSsids(context)) }
 
+    // --- Client certificate state
+    var clientCertEnabled by remember { mutableStateOf(HaSettings.loadClientCertEnabled(context)) }
+    var clientCertAlias by remember { mutableStateOf(HaSettings.loadClientCertAlias(context)) }
+
+    // Single test status — shows which target was last tested.
     var status by remember { mutableStateOf(Status.Idle) }
     var error by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
+    var lastTestedLabel by remember { mutableStateOf<String?>(null) }
+    var testingLabel by remember { mutableStateOf<String?>(null) }
     var saved by remember { mutableStateOf(false) }
 
-    val unsavedChanges by remember(url, token, localUrlEnabled, localUrl, homeSsids) {
+    val unsavedChanges by remember(
+        url, token, localUrlEnabled, localUrl, homeSsids, clientCertEnabled, clientCertAlias
+    ) {
         mutableStateOf(
             url != HaSettings.loadUrl(context) ||
             token != HaSettings.loadToken(context) ||
             localUrlEnabled != HaSettings.loadLocalUrlEnabled(context) ||
             localUrl != HaSettings.loadLocalUrl(context) ||
-            homeSsids != HaSettings.loadHomeSsids(context)
+            homeSsids != HaSettings.loadHomeSsids(context) ||
+            clientCertEnabled != HaSettings.loadClientCertEnabled(context) ||
+            clientCertAlias != HaSettings.loadClientCertAlias(context)
         )
     }
 
@@ -121,6 +138,8 @@ fun MainSettingsScreen(
     var generalLevel by remember { mutableStateOf(HaSettings.loadLogLevel(context, LogChannel.GENERAL)) }
     var wsLevel by remember { mutableStateOf(HaSettings.loadLogLevel(context, LogChannel.WEBSOCKET)) }
 
+    val testing = testingLabel != null
+
     // Top bar depends on selected tab
     LaunchedEffect(selectedTab, unsavedChanges, testing, saved, url, token) {
         setTopBar {
@@ -135,6 +154,8 @@ fun MainSettingsScreen(
                                 HaSettings.saveLocalUrlEnabled(context, localUrlEnabled)
                                 HaSettings.saveLocalUrl(context, localUrl.trim())
                                 HaSettings.saveHomeSsids(context, homeSsids)
+                                HaSettings.saveClientCertEnabled(context, clientCertEnabled)
+                                HaSettings.saveClientCertAlias(context, clientCertAlias)
                                 setSaved()
                             }
                         ) {
@@ -147,6 +168,33 @@ fun MainSettingsScreen(
                     }
                 }
             )
+        }
+    }
+
+    fun runTest(label: String, targetUrl: String) {
+        testingLabel = label
+        status = Status.Testing
+        lastTestedLabel = label
+        // Build a one-shot OkHttpClient honoring the IN-MEMORY cert toggle/alias
+        // so the user can test without saving first.
+        val httpClient = HaHttpClientFactory.build(
+            context,
+            clientCertEnabled = clientCertEnabled,
+            clientCertAlias = clientCertAlias
+        )
+        val client = HomeAssistantClient(targetUrl.trim(), token.trim(), httpClient)
+
+        scope.launch {
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    client.ping()
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            status = if (success) Status.Success else Status.Failed
+            testingLabel = null
+            error = client.error
         }
     }
 
@@ -178,34 +226,24 @@ fun MainSettingsScreen(
                     url = url,
                     token = token,
                     testing = testing,
+                    testingLabel = testingLabel,
+                    lastTestedLabel = lastTestedLabel,
                     status = status,
                     error = error,
                     localUrlEnabled = localUrlEnabled,
                     localUrl = localUrl,
                     homeSsids = homeSsids,
+                    clientCertEnabled = clientCertEnabled,
+                    clientCertAlias = clientCertAlias,
                     onUrlChange = { url = it },
                     onTokenChange = { token = it },
                     onLocalUrlEnabledChange = { localUrlEnabled = it },
                     onLocalUrlChange = { localUrl = it },
                     onHomeSsidsChange = { homeSsids = it },
-                    onTest = {
-                        testing = true
-                        status = Status.Testing
-                        val client = HomeAssistantClient(url, token)
-
-                        scope.launch {
-                            val success = withContext(Dispatchers.IO) {
-                                try {
-                                    client.ping()
-                                } catch (_: Exception) {
-                                    false
-                                }
-                            }
-                            status = if (success) Status.Success else Status.Failed
-                            testing = false
-                            error = client.error
-                        }
-                    }
+                    onClientCertEnabledChange = { clientCertEnabled = it },
+                    onClientCertAliasChange = { clientCertAlias = it },
+                    onTestRemote = { runTest("Remote", url) },
+                    onTestLocal = { runTest("Local", localUrl) }
                 )
 
                 SettingsTab.WEBSOCKET -> WebSocketTab(
@@ -301,24 +339,30 @@ private fun ConnectionTab(
     url: String,
     token: String,
     testing: Boolean,
+    testingLabel: String?,
+    lastTestedLabel: String?,
     status: Status,
     error: String?,
     localUrlEnabled: Boolean,
     localUrl: String,
     homeSsids: Set<String>,
+    clientCertEnabled: Boolean,
+    clientCertAlias: String,
     onUrlChange: (String) -> Unit,
     onTokenChange: (String) -> Unit,
     onLocalUrlEnabledChange: (Boolean) -> Unit,
     onLocalUrlChange: (String) -> Unit,
     onHomeSsidsChange: (Set<String>) -> Unit,
-    onTest: () -> Unit
+    onClientCertEnabledChange: (Boolean) -> Unit,
+    onClientCertAliasChange: (String) -> Unit,
+    onTestRemote: () -> Unit,
+    onTestLocal: () -> Unit
 ) {
-    val context = LocalContext.current
-
     OutlinedTextField(
         value = url,
         onValueChange = onUrlChange,
-        label = { Text("Home Assistant URL") },
+        label = { Text("Remote Home Assistant URL") },
+        placeholder = { Text("https://ha.example.com") },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true
     )
@@ -332,14 +376,36 @@ private fun ConnectionTab(
         singleLine = true
     )
 
-    Button(
-        enabled = !testing && url.isNotBlank() && token.isNotBlank(),
-        onClick = onTest
-    ) {
-        Text(if (testing) "Testing..." else "Test Connection")
+    val canTestRemote = !testing && url.isNotBlank() && token.isNotBlank()
+    val canTestLocal = !testing && localUrlEnabled && localUrl.isNotBlank() && token.isNotBlank()
+
+    if (localUrlEnabled) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = canTestRemote,
+                onClick = onTestRemote,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(if (testingLabel == "Remote") "Testing..." else "Test remote")
+            }
+            Button(
+                enabled = canTestLocal,
+                onClick = onTestLocal,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(if (testingLabel == "Local") "Testing..." else "Test local")
+            }
+        }
+    } else {
+        Button(
+            enabled = canTestRemote,
+            onClick = onTestRemote
+        ) {
+            Text(if (testing) "Testing..." else "Test Connection")
+        }
     }
 
-    StatusRow(status, error)
+    StatusRow(status, error, lastTestedLabel)
 
     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
@@ -351,6 +417,16 @@ private fun ConnectionTab(
         onEnabledChange = onLocalUrlEnabledChange,
         onLocalUrlChange = onLocalUrlChange,
         onHomeSsidsChange = onHomeSsidsChange
+    )
+
+    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+    // --- Client certificate section ---
+    ClientCertSection(
+        enabled = clientCertEnabled,
+        alias = clientCertAlias,
+        onEnabledChange = onClientCertEnabledChange,
+        onAliasChange = onClientCertAliasChange
     )
 }
 
@@ -514,6 +590,120 @@ private fun LocalUrlSection(
 }
 
 @Composable
+private fun ClientCertSection(
+    enabled: Boolean,
+    alias: String,
+    onEnabledChange: (Boolean) -> Unit,
+    onAliasChange: (String) -> Unit
+) {
+    val context = LocalContext.current
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Use client certificate")
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange
+        )
+    }
+
+    if (!enabled) {
+        Text(
+            "Enable to authenticate to your remote URL with a client certificate (mTLS) " +
+                    "stored in the Android keystore.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Rounded.Lock,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Selected alias", style = MaterialTheme.typography.titleSmall)
+            Text(
+                alias.ifBlank { "Not selected" },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (alias.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface
+            )
+        }
+        if (alias.isNotBlank()) {
+            IconButton(onClick = { onAliasChange("") }) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "Clear alias",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+    }
+
+    OutlinedButton(
+        onClick = {
+            val activity = findActivity(context)
+            if (activity == null) {
+                Toast.makeText(
+                    context,
+                    "Cannot open certificate picker — host activity not found",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@OutlinedButton
+            }
+            // Permission to read the chosen private key is granted to this app once
+            // the user picks. Subsequent KeyChain.getPrivateKey() calls will not
+            // prompt — important for background tasks while the device is locked.
+            KeyChain.choosePrivateKeyAlias(
+                activity,
+                { chosen ->
+                    Handler(Looper.getMainLooper()).post {
+                        if (chosen != null) onAliasChange(chosen)
+                    }
+                },
+                arrayOf("RSA", "EC"),
+                null,
+                null,
+                -1,
+                alias.ifBlank { null }
+            )
+        },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Icon(Icons.Rounded.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(if (alias.isBlank()) "Choose certificate" else "Change certificate")
+    }
+
+    Text(
+        "The certificate must be installed in Android (Settings → Security → Encryption " +
+                "& credentials → Install a certificate → VPN & app user certificate). " +
+                "Don't forget to save after picking.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+private fun findActivity(context: Context): Activity? {
+    var ctx: Context? = context
+    while (ctx is ContextWrapper) {
+        if (ctx is Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
+}
+
+@Composable
 private fun WebSocketTab(
     wsEnabled: Boolean,
     onToggle: (Boolean) -> Unit
@@ -623,12 +813,14 @@ private fun LogLevelDropdown(
 }
 
 @Composable
-private fun StatusRow(status: Status, error: String? = null) {
+private fun StatusRow(status: Status, error: String? = null, label: String? = null) {
+    val prefix = label?.let { "[$it] " }.orEmpty()
     val text = when (status) {
         Status.Idle -> ""
-        Status.Testing -> "Testing connection..."
-        Status.Success -> "✅ Connected successfully!"
-        Status.Failed -> "❌ Failed to connect: " + (error ?: "Unknown error")
+        Status.Testing -> "${prefix}Testing connection..."
+        Status.Success -> "$prefix✅ Connected successfully!"
+        Status.Failed -> "$prefix❌ Failed to connect: " +
+                (error?.takeIf { it.isNotBlank() } ?: "Unknown error")
     }
     Text(text)
 }

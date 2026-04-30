@@ -4,6 +4,7 @@ import android.content.Context
 import com.github.db1996.taskerha.client.HomeAssistantClient
 import com.github.db1996.taskerha.datamodels.HaSettings
 import com.github.db1996.taskerha.logging.LogChannel
+import com.github.db1996.taskerha.util.HaHttpClientFactory
 import com.github.db1996.taskerha.tasker.base.ErrorCodes.ERROR_CODE_NETWORK
 import com.github.db1996.taskerha.tasker.base.ErrorCodes.ERROR_CODE_UNKNOWN
 import com.joaomgcd.taskerpluginlibrary.action.TaskerPluginRunnerAction
@@ -97,7 +98,7 @@ abstract class BaseTaskerRunner<I : Any, O : Any> : TaskerPluginRunnerAction<I, 
     private fun createClient(context: Context): HomeAssistantClient {
         val url = HaSettings.resolveUrl(context)
         val token = HaSettings.loadToken(context)
-        return HomeAssistantClient(url, token)
+        return HomeAssistantClient(url, token, HaHttpClientFactory.build(context))
     }
 
     /**

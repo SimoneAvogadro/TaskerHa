@@ -32,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.github.db1996.taskerha.util.HaHttpClientFactory
 import com.github.db1996.taskerha.util.NetworkHelper
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -84,9 +85,7 @@ class HaWebSocketService : Service(), BaseLogger {
 
     private val httpClient: OkHttpClient by lazy {
         Logger.getLogger(OkHttpClient::class.java.getName()).setLevel(Level.FINE)
-        OkHttpClient.Builder()
-            .pingInterval(30, TimeUnit.SECONDS)
-            .build()
+        HaHttpClientFactory.build(this) { it.pingInterval(30, TimeUnit.SECONDS) }
     }
 
     // === Reconnect state ===

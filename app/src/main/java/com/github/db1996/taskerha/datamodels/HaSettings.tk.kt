@@ -18,6 +18,10 @@ object HaSettings {
     private const val KEY_LOCAL_URL = "ha_local_url"
     private const val KEY_HOME_SSIDS = "home_ssids"
 
+    // Client certificate (mTLS) feature
+    private const val KEY_CLIENT_CERT_ENABLED = "client_cert_enabled"
+    private const val KEY_CLIENT_CERT_ALIAS = "client_cert_alias"
+
     fun save(context: Context, url: String, token: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit {
@@ -61,6 +65,28 @@ object HaSettings {
     fun loadHomeSsids(context: Context): Set<String> {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet(KEY_HOME_SSIDS, emptySet()) ?: emptySet()
+    }
+
+    // --- Client certificate settings ---
+
+    fun saveClientCertEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit { putBoolean(KEY_CLIENT_CERT_ENABLED, enabled) }
+    }
+
+    fun loadClientCertEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_CLIENT_CERT_ENABLED, false)
+    }
+
+    fun saveClientCertAlias(context: Context, alias: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit { putString(KEY_CLIENT_CERT_ALIAS, alias) }
+    }
+
+    fun loadClientCertAlias(context: Context): String {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CLIENT_CERT_ALIAS, "") ?: ""
     }
 
     /**
